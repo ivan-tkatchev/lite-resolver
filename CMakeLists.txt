@@ -12,6 +12,7 @@ set(SOURCES
   )
 set(src_total ${SOURCES})
 add_library(dns_resolver STATIC ${SOURCES})
+target_compile_options(dns_resolver PRIVATE -fPIC)
 
 target_include_directories(dns_resolver PUBLIC ${INCLUDE_DIRS})
 
