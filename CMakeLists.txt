@@ -14,3 +14,7 @@ set(src_total ${SOURCES})
 add_library(dns_resolver STATIC ${SOURCES})
 
 target_include_directories(dns_resolver PUBLIC ${INCLUDE_DIRS})
+
+install(FILES resolver.hh DESTINATION include)
+install(TARGETS dns_resolver DESTINATION lib)
+install(FILES DNSResolverConfig.cmake DESTINATION lib/cmake/DNSResolver)
