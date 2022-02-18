@@ -2,6 +2,7 @@
 #include <arpa/inet.h> //inet_addr , inet_ntoa , ntohs etc
 #include <functional>
 #include <netinet/in.h>
+#include <stdexcept>
 #include <stdio.h>  //printf
 #include <string.h> //strlen
 #include <sys/socket.h>
@@ -182,6 +183,10 @@ typedef struct {
  * */
 DNS resolve_dns(const std::string &host, DNSRecords query_type,
                 size_t timeout_sec, size_t timeout_micro) {
+  constexpr size_t kBufSize = 65536;
+  constexpr auto kIncorrectReponseMessage =
+      "Incorrect response: buffer out of range";
+
   DNS result;
   if (check_ipv4(host)) {
     result.ipv4 = {host};
@@ -189,7 +194,7 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   }
   static std::string dns_server = get_dns_servers();
 
-  unsigned char buf[65536], *qname, *reader;
+  unsigned char buf[kBufSize], *qname, *reader;
   int i, j, stop, s;
 
   struct sockaddr_in a;
@@ -277,13 +282,17 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   // Start reading answers
   stop = 0;
 
+  const auto *buf_end = &buf[kBufSize - 1];
+
   for (i = 0; i < ntohs(dns->ans_count); i++) {
     answers[i].name = ReadName(reader, buf, &stop);
     reader = reader + stop;
 
     answers[i].resource = (struct R_DATA *)(reader);
     reader = reader + sizeof(struct R_DATA);
-
+    if (reader > buf_end) {
+      throw std::runtime_error(kIncorrectReponseMessage);
+    }
     if (ntohs(answers[i].resource->type) == 1) // if its an ipv4 address
     {
       answers[i].rdata = std::string(
@@ -296,9 +305,15 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
       answers[i].rdata[ntohs(answers[i].resource->data_len)] = '\0';
 
       reader = reader + ntohs(answers[i].resource->data_len);
+      if (reader > buf_end) {
+        throw std::runtime_error(kIncorrectReponseMessage);
+      }
     } else {
       answers[i].rdata = ReadName(reader, buf, &stop);
       reader = reader + stop;
+      if (reader > buf_end) {
+        throw std::runtime_error(kIncorrectReponseMessage);
+      }
     }
   }
 
@@ -306,12 +321,19 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   for (i = 0; i < ntohs(dns->auth_count); i++) {
     auth[i].name = ReadName(reader, buf, &stop);
     reader += stop;
-
+    if (reader > buf_end) {
+      throw std::runtime_error(kIncorrectReponseMessage);
+    }
     auth[i].resource = (struct R_DATA *)(reader);
     reader += sizeof(struct R_DATA);
-
+    if (reader > buf_end) {
+      throw std::runtime_error(kIncorrectReponseMessage);
+    }
     auth[i].rdata = ReadName(reader, buf, &stop);
     reader += stop;
+    if (reader > buf_end) {
+      throw std::runtime_error(kIncorrectReponseMessage);
+    }
   }
 
   // read additional
@@ -319,8 +341,16 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
     addit[i].name = ReadName(reader, buf, &stop);
     reader += stop;
 
+    if (reader > buf_end) {
+      throw std::runtime_error(kIncorrectReponseMessage);
+    }
+
     addit[i].resource = (struct R_DATA *)(reader);
     reader += sizeof(struct R_DATA);
+
+    if (reader > buf_end) {
+      throw std::runtime_error(kIncorrectReponseMessage);
+    }
 
     if (ntohs(addit[i].resource->type) == 1) {
       addit[i].rdata = std::string(
@@ -330,9 +360,15 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
 
       addit[i].rdata[ntohs(addit[i].resource->data_len)] = '\0';
       reader += ntohs(addit[i].resource->data_len);
+      if (reader > buf_end) {
+        throw std::runtime_error(kIncorrectReponseMessage);
+      }
     } else {
       addit[i].rdata = ReadName(reader, buf, &stop);
       reader += stop;
+      if (reader > buf_end) {
+        throw std::runtime_error(kIncorrectReponseMessage);
+      }
     }
   }
 
