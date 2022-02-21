@@ -122,6 +122,8 @@ std::string ReadName(unsigned char *reader, unsigned char *buffer, int *count) {
   }
   if(!name.empty()) {
    name.pop_back();
+  } else {
+    throw std::runtime_error("Empty IP address while dns resolving");
   }
   return name;
 }
