@@ -62,65 +62,61 @@ std::string get_dns_servers() {
   return dns_server;
 }
 
-void ChangetoDnsNameFormat(unsigned char *dns, std::string host) {
+bool ChangetoDnsNameFormat(unsigned char* dns, const unsigned char* buf_end, std::string host) {
   size_t lock = 0, i;
   host.push_back('.');
 
   for (i = 0; i < host.size(); i++) {
-    if (host[i] == '.') {
-      *dns++ = i - lock;
-      for (; lock < i; lock++) {
-        *dns++ = host[lock];
+      if (dns >= buf_end - 1) {
+          return false;
       }
-      lock++; // or lock=i+1;
-    }
+
+      if (host[i] == '.') {
+          *dns++ = i - lock;
+          for (; lock < i; lock++) {
+              *dns++ = host[lock];
+          }
+          lock++; // or lock=i+1;
+      }
   }
   *dns++ = '\0';
+  return true;
 }
 
-std::string ReadName(unsigned char *reader, unsigned char *buffer, int *count) {
+std::string ReadName(const unsigned char *reader, const unsigned char *buffer, int *count) {
   std::string name;
   name.reserve(256);
-  unsigned int p = 0, jumped = 0, offset;
-  size_t i, j;
+  bool jumped = false;
 
   *count = 1;
 
   // read the names in 3www6google3com format
   while (*reader != 0) {
-    if (*reader >= 192) {
-      offset = (*reader) * 256 + *(reader + 1) -
-               49152; // 49152 = 11000000 00000000 ;)
-      reader = buffer + offset - 1;
-      jumped = 1; // we have jumped to another location so counting wont go up!
-    } else {
-      name.push_back(*reader);
-    }
+      if (!jumped && (*reader & 0xC0) == 0xC0) {
+          size_t offset = ((*reader) * 256 + *(reader + 1)) & (~0xc000); // 49152 = 11000000 00000000 ;)
+          reader = buffer + offset;
+          *count += 2;
+          jumped = true;
+      } else {
+          unsigned int len = *reader;
 
-    reader = reader + 1;
+          for (unsigned int j = 0; j < len; ++j) {
+              ++reader;
+              name.push_back(*reader);
+          }
 
-    if (jumped == 0) {
-      *count =
-          *count +
-          1; // if we havent jumped to another location then we can count up
-    }
+          name.push_back('.');
+
+          if (!jumped) {
+              *count += len;
+          }
+      }
   }
 
-  if (jumped == 1) {
-    *count =
-        *count + 1; // number of steps we actually moved forward in the packet
+  if (name.size() > 0) {
+      name.pop_back();
   }
 
-  // now convert 3www6google3com0 to www.google.com
-  for (i = 0; i < name.size(); i++) {
-    p = name[i];
-    for (j = 0; j < (size_t)p; j++) {
-      name[i] = name[i + 1];
-      i = i + 1;
-    }
-    name[i] = '.';
-  }
-  name.pop_back();
   return name;
 }
 
@@ -195,12 +191,13 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   static std::string dns_server = get_dns_servers();
 
   unsigned char buf[kBufSize], *qname, *reader;
-  int i, j, stop, s;
+  int stop;
+
+  const auto* buf_end = &buf[kBufSize - 1];
 
   struct sockaddr_in a;
 
-  struct RES_RECORD answers[20], auth[20],
-      addit[20]; // the replies from the DNS server
+  struct RES_RECORD answers[20], auth[20], addit[20]; // the replies from the DNS server
   struct sockaddr_in dest;
 
   struct DNS_HEADER *dns = NULL;
@@ -208,8 +205,7 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
 
   DEBUG("Resolving %s", host.c_str());
 
-  s = SocketRAII(AF_INET, SOCK_DGRAM,
-                 IPPROTO_UDP); // UDP packet for DNS queries
+  SocketRAII s(AF_INET, SOCK_DGRAM, IPPROTO_UDP); // UDP packet for DNS queries
 
   if (s < 0) {
       perror("socket() failed");
@@ -247,18 +243,22 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   // point to the query portion
   qname = (unsigned char *)&buf[sizeof(struct DNS_HEADER)];
 
-  ChangetoDnsNameFormat(qname, host);
-  qinfo = (struct QUESTION *)&buf[sizeof(struct DNS_HEADER) +
-                                  (strlen((const char *)qname) + 1)]; // fill it
+  if (!ChangetoDnsNameFormat(qname, buf_end, host)) {
+      return result;
+  }
 
-  qinfo->qtype = (size_t)htons(static_cast<uint16_t>(
-      query_type)); // type of the query , A , MX , CNAME , NS etc
+  qinfo = (struct QUESTION *)&buf[sizeof(struct DNS_HEADER) + (strlen((const char *)qname) + 1)];
+
+  if ((const unsigned char*)qinfo + sizeof(struct QUESTION) > buf_end) {
+      return result;
+  }
+
+  qinfo->qtype = (size_t)htons(static_cast<uint16_t>(query_type)); // type of the query , A , MX , CNAME , NS etc
   qinfo->qclass = (size_t)htons(1); // its internet (lol)
 
   DEBUG("\nSending Packet...");
   if (sendto(s, (char *)buf,
-             sizeof(struct DNS_HEADER) + (strlen((const char *)qname) + 1) +
-                 sizeof(struct QUESTION),
+             sizeof(struct DNS_HEADER) + (strlen((const char *)qname) + 1) + sizeof(struct QUESTION),
              0, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
 
       perror("sendto() failed");
@@ -267,10 +267,9 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   DEBUG("Done");
 
   // Receive the answer
-  i = sizeof dest;
+  int i = sizeof dest;
   DEBUG("\nReceiving answer...");
-  if (recvfrom(s, (char *)buf, 65536, 0, (struct sockaddr *)&dest,
-               (socklen_t *)&i) < 0) {
+  if (recvfrom(s, (char *)buf, kBufSize, 0, (struct sockaddr *)&dest, (socklen_t *)&i) < 0) {
 
       perror("recvfrom() failed");
       return result;
@@ -280,8 +279,7 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   dns = (struct DNS_HEADER *)buf;
 
   // move ahead of the dns header and the query field
-  reader = &buf[sizeof(struct DNS_HEADER) + (strlen((const char *)qname) + 1) +
-                sizeof(struct QUESTION)];
+  reader = &buf[sizeof(struct DNS_HEADER) + (strlen((const char *)qname) + 1) + sizeof(struct QUESTION)];
 
   DEBUG("\nThe response contains : ");
   DEBUG("\n %d Questions.", ntohs(dns->q_count));
@@ -292,9 +290,7 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   // Start reading answers
   stop = 0;
 
-  const auto *buf_end = &buf[kBufSize - 1];
-
-  for (i = 0; i < ntohs(dns->ans_count); i++) {
+  for (int i = 0; i < ntohs(dns->ans_count); i++) {
     answers[i].name = ReadName(reader, buf, &stop);
     reader = reader + stop;
 
@@ -303,106 +299,99 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
     if (reader > buf_end) {
       throw std::runtime_error(kIncorrectReponseMessage);
     }
-    if (ntohs(answers[i].resource->type) == 1) // if its an ipv4 address
+
+    if (static_cast<DNSRecords>(ntohs(answers[i].resource->type)) == DNSRecords::T_A) // if its an ipv4 address
     {
-      answers[i].rdata = std::string(
-          static_cast<size_t>(ntohs(answers[i].resource->data_len)), ' ');
+        answers[i].rdata = std::string(reader,
+                                       reader + static_cast<size_t>(ntohs(answers[i].resource->data_len)));
 
-      for (j = 0; j < ntohs(answers[i].resource->data_len); j++) {
-        answers[i].rdata[j] = reader[j];
-      }
+        reader = reader + answers[i].rdata.size();
 
-      answers[i].rdata[ntohs(answers[i].resource->data_len)] = '\0';
+        if (reader > buf_end) {
+            throw std::runtime_error(kIncorrectReponseMessage);
+        }
 
-      reader = reader + ntohs(answers[i].resource->data_len);
-      if (reader > buf_end) {
-        throw std::runtime_error(kIncorrectReponseMessage);
-      }
     } else {
-      answers[i].rdata = ReadName(reader, buf, &stop);
-      reader = reader + stop;
-      if (reader > buf_end) {
-        throw std::runtime_error(kIncorrectReponseMessage);
-      }
+        answers[i].rdata = ReadName(reader, buf, &stop);
+        reader = reader + stop;
+        if (reader > buf_end) {
+            throw std::runtime_error(kIncorrectReponseMessage);
+        }
     }
   }
 
   // read authorities
-  for (i = 0; i < ntohs(dns->auth_count); i++) {
-    auth[i].name = ReadName(reader, buf, &stop);
-    reader += stop;
-    if (reader > buf_end) {
-      throw std::runtime_error(kIncorrectReponseMessage);
-    }
-    auth[i].resource = (struct R_DATA *)(reader);
-    reader += sizeof(struct R_DATA);
-    if (reader > buf_end) {
-      throw std::runtime_error(kIncorrectReponseMessage);
-    }
-    auth[i].rdata = ReadName(reader, buf, &stop);
-    reader += stop;
-    if (reader > buf_end) {
-      throw std::runtime_error(kIncorrectReponseMessage);
-    }
+  for (int i = 0; i < ntohs(dns->auth_count); i++) {
+      auth[i].name = ReadName(reader, buf, &stop);
+      reader += stop;
+      if (reader > buf_end) {
+          throw std::runtime_error(kIncorrectReponseMessage);
+      }
+
+      auth[i].resource = (struct R_DATA *)(reader);
+      reader += sizeof(struct R_DATA);
+      if (reader > buf_end) {
+          throw std::runtime_error(kIncorrectReponseMessage);
+      }
+
+      auth[i].rdata = ReadName(reader, buf, &stop);
+      reader += stop;
+      if (reader > buf_end) {
+          throw std::runtime_error(kIncorrectReponseMessage);
+      }
   }
 
   // read additional
-  for (i = 0; i < ntohs(dns->add_count); i++) {
-    addit[i].name = ReadName(reader, buf, &stop);
-    reader += stop;
-
-    if (reader > buf_end) {
-      throw std::runtime_error(kIncorrectReponseMessage);
-    }
-
-    addit[i].resource = (struct R_DATA *)(reader);
-    reader += sizeof(struct R_DATA);
-
-    if (reader > buf_end) {
-      throw std::runtime_error(kIncorrectReponseMessage);
-    }
-
-    if (ntohs(addit[i].resource->type) == 1) {
-      addit[i].rdata = std::string(
-          static_cast<size_t>(ntohs(addit[i].resource->data_len)), ' ');
-      for (j = 0; j < ntohs(addit[i].resource->data_len); j++)
-        addit[i].rdata[j] = reader[j];
-
-      addit[i].rdata[ntohs(addit[i].resource->data_len)] = '\0';
-      reader += ntohs(addit[i].resource->data_len);
-      if (reader > buf_end) {
-        throw std::runtime_error(kIncorrectReponseMessage);
-      }
-    } else {
-      addit[i].rdata = ReadName(reader, buf, &stop);
+  for (int i = 0; i < ntohs(dns->add_count); i++) {
+      addit[i].name = ReadName(reader, buf, &stop);
       reader += stop;
       if (reader > buf_end) {
-        throw std::runtime_error(kIncorrectReponseMessage);
+          throw std::runtime_error(kIncorrectReponseMessage);
       }
-    }
+
+      addit[i].resource = (struct R_DATA *)(reader);
+      reader += sizeof(struct R_DATA);
+      if (reader > buf_end) {
+          throw std::runtime_error(kIncorrectReponseMessage);
+      }
+
+      if (ntohs(addit[i].resource->type) == 1) {
+          addit[i].rdata = std::string(reader,
+                                       reader + static_cast<size_t>(ntohs(addit[i].resource->data_len)));
+
+          reader += addit[i].rdata.size();
+          if (reader > buf_end) {
+              throw std::runtime_error(kIncorrectReponseMessage);
+          }
+      } else {
+          addit[i].rdata = ReadName(reader, buf, &stop);
+          reader += stop;
+          if (reader > buf_end) {
+              throw std::runtime_error(kIncorrectReponseMessage);
+          }
+      }
   }
 
   // print answers
   DEBUG("\nAnswer Records : %d \n", ntohs(dns->ans_count));
   result.ipv4.reserve(ntohs(dns->ans_count));
 
-  for (i = 0; i < ntohs(dns->ans_count); i++) {
+  for (int i = 0; i < ntohs(dns->ans_count); i++) {
     DEBUG("Name : %s ", answers[i].name.c_str());
 
-    if (static_cast<DNSRecords>(ntohs(answers[i].resource->type)) ==
-        DNSRecords::T_A) // IPv4 address
+    if (static_cast<DNSRecords>(ntohs(answers[i].resource->type)) == DNSRecords::T_A) // IPv4 address
     {
-      long *p;
-      p = (long *)answers[i].rdata.c_str();
-      a.sin_addr.s_addr = (*p); // working without ntohl
-      DEBUG("has IPv4 address : %s", inet_ntoa(a.sin_addr));
-      result.ipv4.push_back(inet_ntoa(a.sin_addr));
+        long* p;
+        p = (long *)answers[i].rdata.data();
+        a.sin_addr.s_addr = (*p); // working without ntohl
+        DEBUG("has IPv4 address : %s", inet_ntoa(a.sin_addr));
+        result.ipv4.push_back(inet_ntoa(a.sin_addr));
     }
 
     if (ntohs(answers[i].resource->type) == 5) {
-      // Canonical name for an alias
-      DEBUG("has alias name : %s", answers[i].rdata.c_str());
-      result.ipv4_aliases.push_back(answers[i].rdata);
+        // Canonical name for an alias
+        DEBUG("has alias name : %s", answers[i].rdata.c_str());
+        result.ipv4_aliases.push_back(answers[i].rdata);
     }
 
     DEBUG("\n");
@@ -410,25 +399,25 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
 #ifdef ADDITIONAL_DNS_RESULTS
   // print authorities
   DEBUG("\nAuthoritive Records : %d \n", ntohs(dns->auth_count));
-  for (i = 0; i < ntohs(dns->auth_count); i++) {
+  for (int i = 0; i < ntohs(dns->auth_count); i++) {
     DEBUG("Name : %s ", auth[i].name.c_str());
     if (ntohs(auth[i].resource->type) == 2) {
-      DEBUG("has nameserver : %s", auth[i].rdata.c_str());
+        DEBUG("has nameserver : %s", auth[i].rdata.c_str());
     }
     DEBUG("\n");
   }
 
   // print additional resource records
   DEBUG("\nAdditional Records : %d \n", ntohs(dns->add_count));
-  for (i = 0; i < ntohs(dns->add_count); i++) {
-    DEBUG("Name : %s ", addit[i].name.c_str());
-    if (ntohs(addit[i].resource->type) == 1) {
-      long *p;
-      p = (long *)addit[i].rdata.c_str();
-      a.sin_addr.s_addr = (*p);
-      DEBUG("has IPv4 address : %s", inet_ntoa(a.sin_addr));
-    }
-    DEBUG("\n");
+  for (int i = 0; i < ntohs(dns->add_count); i++) {
+      DEBUG("Name : %s ", addit[i].name.c_str());
+      if (ntohs(addit[i].resource->type) == 1) {
+          long *p;
+          p = (long *)addit[i].rdata.c_str();
+          a.sin_addr.s_addr = (*p);
+          DEBUG("has IPv4 address : %s", inet_ntoa(a.sin_addr));
+      }
+      DEBUG("\n");
   }
 #endif
 
