@@ -120,7 +120,9 @@ std::string ReadName(unsigned char *reader, unsigned char *buffer, int *count) {
     }
     name[i] = '.';
   }
-  name.pop_back();
+  if(!name.empty()) {
+   name.pop_back();
+  }
   return name;
 }
 
