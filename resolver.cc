@@ -210,6 +210,12 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
 
   s = SocketRAII(AF_INET, SOCK_DGRAM,
                  IPPROTO_UDP); // UDP packet for DNS queries
+
+  if (s < 0) {
+      perror("socket() failed");
+      return result;
+  }
+
   struct timeval timeout;
   timeout.tv_sec = timeout_sec;
   timeout.tv_usec = timeout_micro;
@@ -254,7 +260,9 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
              sizeof(struct DNS_HEADER) + (strlen((const char *)qname) + 1) +
                  sizeof(struct QUESTION),
              0, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
-    perror("sendto failed");
+
+      perror("sendto() failed");
+      return result;
   }
   DEBUG("Done");
 
@@ -263,7 +271,9 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   DEBUG("\nReceiving answer...");
   if (recvfrom(s, (char *)buf, 65536, 0, (struct sockaddr *)&dest,
                (socklen_t *)&i) < 0) {
-    perror("recvfrom failed");
+
+      perror("recvfrom() failed");
+      return result;
   }
   DEBUG("Done");
 
