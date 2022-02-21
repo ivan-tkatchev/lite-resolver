@@ -10,11 +10,12 @@
 
 #include "resolver.hh"
 
-#ifdef DEBUG_ON
+//#ifdef DEBUG_ON
 #define DEBUG(...) fprintf(stderr, __VA_ARGS__)
-#else
-#define DEBUG(...)
-#endif
+#define ADDITIONAL_DNS_RESULTS 1
+//#else
+//#define DEBUG(...)
+//#endif
 
 namespace {
 
