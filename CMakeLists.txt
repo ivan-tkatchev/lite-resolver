@@ -8,9 +8,10 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
 endif() 
 
-set(CMAKE_CXX_FLAGS "-Wall -Wextra") 
-set(CMAKE_CXX_FLAGS_DEBUG "-g -ggdb -DDEBUG_ON -fsanitize=address -fsanitize=undefined")
-set(CMAKE_LINK_FLAGS_DEBUG " -fsanitize-recover=all -fstack-protector-all")
+set(CMAKE_CXX_FLAGS "-Wall -Wextra")
+set(CMAKE_CXX_FLAGS_DEBUG "-g")
+#set(CMAKE_CXX_FLAGS_DEBUG "-g -ggdb -DDEBUG_ON -fsanitize=address -fsanitize=undefined")
+#set(CMAKE_LINK_FLAGS_DEBUG " -fsanitize-recover=all -fstack-protector-all")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 set(INCLUDE_DIRS

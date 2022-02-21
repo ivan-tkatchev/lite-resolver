@@ -12,7 +12,6 @@
 
 #ifdef DEBUG_ON
 #define DEBUG(...) fprintf(stderr, __VA_ARGS__)
-#define ADDITIONAL_DNS_RESULTS 1
 #else
 #define DEBUG(...)
 #endif
@@ -217,7 +216,7 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   struct timeval timeout;
   timeout.tv_sec = timeout_sec;
   timeout.tv_usec = timeout_micro;
-  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval));
 
   dest.sin_family = AF_INET;
   dest.sin_port = htons(53);
@@ -313,116 +312,25 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
             throw std::runtime_error(kIncorrectReponseMessage);
         }
 
+        long* p;
+        p = (long *)answers[i].rdata.data();
+        a.sin_addr.s_addr = (*p); // working without ntohl
+        DEBUG("has IPv4 address : %s", inet_ntoa(a.sin_addr));
+        result.ipv4.push_back(inet_ntoa(a.sin_addr));
+
     } else {
         answers[i].rdata = ReadName(reader, buf, &stop);
         reader = reader + stop;
         if (reader > buf_end) {
             throw std::runtime_error(kIncorrectReponseMessage);
         }
+
+        if (static_cast<DNSRecords>(ntohs(answers[i].resource->type)) == DNSRecords::T_CNAME) {
+            DEBUG("has alias name : %s", answers[i].rdata.c_str());
+            result.ipv4_aliases.push_back(answers[i].rdata);
+        }
     }
   }
-
-  // read authorities
-  for (int i = 0; i < ntohs(dns->auth_count); i++) {
-      auth[i].name = ReadName(reader, buf, &stop);
-      reader += stop;
-      if (reader > buf_end) {
-          throw std::runtime_error(kIncorrectReponseMessage);
-      }
-
-      auth[i].resource = (struct R_DATA *)(reader);
-      reader += sizeof(struct R_DATA);
-      if (reader > buf_end) {
-          throw std::runtime_error(kIncorrectReponseMessage);
-      }
-
-      auth[i].rdata = ReadName(reader, buf, &stop);
-      reader += stop;
-      if (reader > buf_end) {
-          throw std::runtime_error(kIncorrectReponseMessage);
-      }
-  }
-
-  // read additional
-  for (int i = 0; i < ntohs(dns->add_count); i++) {
-      addit[i].name = ReadName(reader, buf, &stop);
-      reader += stop;
-      if (reader > buf_end) {
-          throw std::runtime_error(kIncorrectReponseMessage);
-      }
-
-      addit[i].resource = (struct R_DATA *)(reader);
-      reader += sizeof(struct R_DATA);
-      if (reader > buf_end) {
-          throw std::runtime_error(kIncorrectReponseMessage);
-      }
-
-      if (ntohs(addit[i].resource->type) == 1) {
-          addit[i].rdata = std::string(reader,
-                                       reader + static_cast<size_t>(ntohs(addit[i].resource->data_len)));
-
-          reader += addit[i].rdata.size();
-          if (reader > buf_end) {
-              throw std::runtime_error(kIncorrectReponseMessage);
-          }
-      } else {
-          addit[i].rdata = ReadName(reader, buf, &stop);
-          reader += stop;
-          if (reader > buf_end) {
-              throw std::runtime_error(kIncorrectReponseMessage);
-          }
-      }
-  }
-
-  // print answers
-  DEBUG("\nAnswer Records : %d \n", ntohs(dns->ans_count));
-  result.ipv4.reserve(ntohs(dns->ans_count));
-
-  for (int i = 0; i < ntohs(dns->ans_count); i++) {
-      DEBUG("Name : %d %s ", ntohs(answers[i].resource->type), answers[i].name.c_str());
-
-      if (static_cast<DNSRecords>(ntohs(answers[i].resource->type)) == DNSRecords::T_A) // IPv4 address
-      {
-          long* p;
-          p = (long *)answers[i].rdata.data();
-          a.sin_addr.s_addr = (*p); // working without ntohl
-          DEBUG("has IPv4 address : %s", inet_ntoa(a.sin_addr));
-          result.ipv4.push_back(inet_ntoa(a.sin_addr));
-      }
-
-      if (ntohs(answers[i].resource->type) == 5) {
-          // Canonical name for an alias
-          DEBUG("has alias name : %s", answers[i].rdata.c_str());
-          result.ipv4_aliases.push_back(answers[i].rdata);
-      }
-
-      DEBUG("\n");
-  }
-
-#ifdef ADDITIONAL_DNS_RESULTS
-  // print authorities
-  DEBUG("\nAuthoritive Records : %d \n", ntohs(dns->auth_count));
-  for (int i = 0; i < ntohs(dns->auth_count); i++) {
-    DEBUG("Name : %s ", auth[i].name.c_str());
-    if (ntohs(auth[i].resource->type) == 2) {
-        DEBUG("has nameserver : %s", auth[i].rdata.c_str());
-    }
-    DEBUG("\n");
-  }
-
-  // print additional resource records
-  DEBUG("\nAdditional Records : %d \n", ntohs(dns->add_count));
-  for (int i = 0; i < ntohs(dns->add_count); i++) {
-      DEBUG("Name : %s ", addit[i].name.c_str());
-      if (ntohs(addit[i].resource->type) == 1) {
-          long *p;
-          p = (long *)addit[i].rdata.c_str();
-          a.sin_addr.s_addr = (*p);
-          DEBUG("has IPv4 address : %s", inet_ntoa(a.sin_addr));
-      }
-      DEBUG("\n");
-  }
-#endif
 
   return result;
 }
