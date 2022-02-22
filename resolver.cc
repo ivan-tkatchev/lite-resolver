@@ -93,9 +93,11 @@ std::string ReadName(const unsigned char *reader, const unsigned char *buffer, i
   // read the names in 3www6google3com format
   while (*reader != 0) {
       if ((*reader & 0xC0) == 0xC0) {
-          size_t offset = ((*reader) * 256 + *(reader + 1)) & (~0xc000); // 49152 = 11000000 00000000 ;)
+          size_t offset = ((*reader) * 256 + *(reader + 1)) & (~0xc000);
           reader = buffer + offset;
-          *count += 2;
+          if (!jumped) {
+              *count += 2;
+          }
           jumped = true;
       } else {
           unsigned int len = *reader;
@@ -124,6 +126,7 @@ std::string ReadName(const unsigned char *reader, const unsigned char *buffer, i
 } // namespace
 
 namespace http::dns {
+
 // DNS header structure
 struct DNS_HEADER {
   unsigned short id; // identification number
@@ -152,29 +155,6 @@ struct QUESTION {
   uint16_t qclass;
 };
 
-// Constant sized fields of the resource record structure
-#pragma pack(push, 1)
-struct R_DATA {
-  unsigned short type;
-  unsigned short _class;
-  unsigned int ttl;
-  unsigned short data_len;
-};
-#pragma pack(pop)
-
-// Pointers to resource record contents
-struct RES_RECORD {
-  struct R_DATA *resource;
-  std::string name;
-  std::string rdata;
-};
-
-// Structure of a Query
-typedef struct {
-  unsigned char *name;
-  struct QUESTION *ques;
-} QUERY;
-
 /*
  * Perform a DNS query by sending a packet
  * */
@@ -196,9 +176,6 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
 
   const auto* buf_end = &buf[kBufSize - 1];
 
-  struct sockaddr_in a;
-
-  struct RES_RECORD answers[20], auth[20], addit[20]; // the replies from the DNS server
   struct sockaddr_in dest;
 
   struct DNS_HEADER *dns = NULL;
@@ -292,44 +269,45 @@ DNS resolve_dns(const std::string &host, DNSRecords query_type,
   stop = 0;
 
   for (int i = 0; i < ntohs(dns->ans_count); i++) {
-    answers[i].name = ReadName(reader, buf, &stop);
-    reader = reader + stop;
+      std::string a_name = ReadName(reader, buf, &stop);
+      reader = reader + stop;
 
-    answers[i].resource = (struct R_DATA *)(reader);
-    reader = reader + sizeof(struct R_DATA);
-    if (reader > buf_end) {
-      throw std::runtime_error(kIncorrectReponseMessage);
-    }
+      if (reader + 10 > buf_end) {
+          throw std::runtime_error(kIncorrectReponseMessage);
+      }
 
-    DEBUG("  Ans: %d\n", ntohs(answers[i].resource->type));
-    if (static_cast<DNSRecords>(ntohs(answers[i].resource->type)) == DNSRecords::T_A) // if its an ipv4 address
-    {
-        answers[i].rdata = std::string(reader,
-                                       reader + static_cast<size_t>(ntohs(answers[i].resource->data_len)));
+      uint16_t type = reader[1] | (reader[0] << 8L);
+      // We don't care about class and ttl here.
+      uint16_t data_len = reader[9] | (reader[8] << 8L);
 
-        reader = reader + answers[i].rdata.size();
-        if (reader > buf_end) {
-            throw std::runtime_error(kIncorrectReponseMessage);
-        }
+      reader += 10;
 
-        long* p;
-        p = (long *)answers[i].rdata.data();
-        a.sin_addr.s_addr = (*p); // working without ntohl
-        DEBUG("has IPv4 address : %s", inet_ntoa(a.sin_addr));
-        result.ipv4.push_back(inet_ntoa(a.sin_addr));
 
-    } else {
-        answers[i].rdata = ReadName(reader, buf, &stop);
-        reader = reader + stop;
-        if (reader > buf_end) {
-            throw std::runtime_error(kIncorrectReponseMessage);
-        }
+      DEBUG("  Ans: %s %d %d %d\n", a_name.c_str(), type, stop, data_len);
+      if (static_cast<DNSRecords>(type) == DNSRecords::T_A) {
+          uint32_t p;
+          struct sockaddr_in a;
 
-        if (static_cast<DNSRecords>(ntohs(answers[i].resource->type)) == DNSRecords::T_CNAME) {
-            DEBUG("has alias name : %s", answers[i].rdata.c_str());
-            result.ipv4_aliases.push_back(answers[i].rdata);
-        }
-    }
+          if (data_len != 4) {
+              throw std::runtime_error(kIncorrectReponseMessage);
+          }
+
+          ::memcpy(&p, reader, sizeof(uint32_t));
+          a.sin_addr.s_addr = p; // working without ntohl
+          DEBUG("has IPv4 address : %s\n", inet_ntoa(a.sin_addr));
+          result.ipv4.push_back(inet_ntoa(a.sin_addr));
+
+      } else if (static_cast<DNSRecords>(type) == DNSRecords::T_CNAME) {
+
+          std::string cname = ReadName(reader, buf, &stop);
+          result.ipv4_aliases.push_back(cname);
+          DEBUG("alias : %s\n", cname.c_str());
+      }
+
+      reader = reader + data_len;
+      if (reader > buf_end) {
+          throw std::runtime_error(kIncorrectReponseMessage);
+      }
   }
 
   return result;
