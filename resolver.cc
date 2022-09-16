@@ -24,7 +24,7 @@ struct SocketRAII {
   }
 
   operator int() const { return fd; }
-  ~SocketRAII() { ::close(fd); }
+  ~SocketRAII() noexcept(false) { ::close(fd); }
 
   int fd;
 };
